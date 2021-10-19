@@ -1,0 +1,366 @@
+---
+title: "NLP, Topic Modeling, Term Distribution Analysis"
+author: "Mohammed Alrashidan"
+output: html_document
+---
+
+
+```{r, message=FALSE}
+# loading all pre-processing functions
+source("/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/Functions/load_NLP_env.R")
+path <- "/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/Functions/"
+load_NLP_env(path)
+
+```
+
+```{r}
+speech <- read.csv("/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/datasets/UN_speeches.csv")
+speech <- speech[speech$country == 'USA',]
+```
+
+```{r}
+# text_processing 
+text <- pre_process_corpus(speech, "text", replace_numbers = T,
+                   root_gen = 'lemmatize', output_corpus = T)
+```
+
+
+```{r}
+# build tokenizer
+tokenizer <- function(x) {unlist(lapply(ngrams(words(x), 1), paste, collapse = " "), use.names = FALSE)}
+
+# set lower bound
+lbound <- 2
+
+# create DTM
+dtm1 <- as.matrix(DocumentTermMatrix(text, control = list(tokenize = tokenizer, bounds = list(global = c(lbound, Inf)))))
+
+# create bigram DTM
+tokenizer <- function(x) {unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)}
+dtm2 <- as.matrix(DocumentTermMatrix(text, control = list(tokenize = tokenizer, bounds = list(global = c(lbound, Inf)))))
+
+# create trigram DTM
+tokenizer <- function(x) {unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)}
+dtm3 <- as.matrix(DocumentTermMatrix(text, control = list(tokenize = tokenizer, bounds = list(global = c(lbound, Inf)))))
+
+dtm <- cbind(dtm1, dtm2)
+dtm <- cbind(dtm, dtm3)
+dim(dtm)
+
+```
+
+
+## 1 Frequncy Analysis of all words in the corpus
+
+```{r}
+freq_table <- data.frame(term = colnames(dtm), n = colSums(dtm),
+                         freq = colSums(dtm)/sum(dtm))
+
+freq_table <- freq_table[order(freq_table$n, decreasing = T),]
+head(freq_table)
+```
+
+## 2, 3 frequency of top countries that were mentioned in the USA speeches
+```{r}
+library(maptools)
+data(wrld_simpl)
+
+co <- tolower(wrld_simpl$NAME)
+
+coutries_freq <- freq_table[freq_table$term %in% co,][1:10,]
+coutries_freq
+#
+ggplot(coutries_freq,aes(x = reorder(term, freq), y = freq)) + 
+  geom_bar(stat = "identity", show.legend = F) + coord_flip() + xlab("country") + theme_bw() +
+  geom_text(aes(label=round(freq,7)), position=position_dodge(width=0.2), vjust=-0, hjust=1.3,colour="white")
+
+ggplot(coutries_freq,aes(x = reorder(term, n), y = n)) + 
+  geom_bar(stat = "identity", show.legend = F) + coord_flip() + xlab("country") + theme_bw() +
+  geom_text(aes(label=round(n,7)), position=position_dodge(width=0.2), vjust=-0, hjust=1.3,colour="white")
+
+```
+
+
+## 4- Of the 5 countries with the highest term count, compare the counts to the mentions of the United States. Show how these terms counts have changed over time.
+```{r, message=FALSE}
+# adding united states to the comparison 
+tops <-  c("iraq", "israel", "afghanistan", "russia", "china", "unite state") 
+term_freq <- dtm[, which(colnames(dtm) %in% sort(tops))]
+colnames(term_freq) <- sort(tops)
+term_freq <- as.data.frame(term_freq)
+term_freq$year <- speech$year
+
+# mellt will convert columns into rows and counting all values of row
+df <- melt(term_freq, id.vars = c("year"), variable.name = "country", value.name = "count")
+
+
+cols <- c("gray", "gray", "gray", "gray", "gray",  "red")
+ggplot(df, aes(x = year, y = count, color= country)) + 
+  geom_line() + scale_color_manual(values = cols) + theme_classic()
+
+
+```
+
+# 5 and 6:  Calculate the TF-IDF values for the DTM. In which year's address does the term 'iraq' provide the most semantic contribution? Evaluate the terms with the highest TF-IDF values 
+```{r}
+# compute IDF
+number_of_docs <- nrow(dtm)
+term_in_docs <- colSums(dtm > 0)
+idf <- log(number_of_docs / term_in_docs)
+
+# compute TF/IDF
+tf_idf <- t(t(dtm) * idf)
+names(tf_idf) <- colnames(dtm)
+rownames(tf_idf) <- speech$year
+
+iraq_years <- sort(tf_idf[,"iraq"], decreasing = T)[1:20]
+head(iraq_years, 1)
+
+
+iraq_content <- sort(tf_idf["2002",], decreasing = T)[1:20]
+as.data.frame(iraq_content)
+```
+For 6, it seems that the context based on the tf/idf values we can infer that the speech was about nations, and renew demand and discussion of iraq regime
+
+
+## 7- Perform a time series analysis on the terms 'nuclear,' 'terrorist,' and 'freedom' using TF-IDF values. How does the use of these terms change over time? Make a visual and describe your results.
+```{r}
+words <- c("nuclear", "terrorist", "freedom")
+tf_idf_words <- tf_idf[, which(colnames(tf_idf) %in% words)]
+colnames(tf_idf_words) <- words
+tf_idf_words <- data.frame(year = speech$year, as.data.frame(tf_idf_words))
+tf_idf_words$year_n <- 1:nrow(tf_idf_words)
+
+# create visual
+tf_idf_words <- melt(tf_idf_words, id.vars = c("year_n", "year"), variable.name = "words", value.name = "tfidf")
+df <- tf_idf_words[order(tf_idf_words$tfidf, decreasing = T),]
+
+cols <- c("blue", "red", "dark green")
+ggplot(df, aes(x = year, y = tfidf, color = words)) + 
+  geom_line() + scale_color_manual(values = cols) + theme_classic() 
+
+```
+We can see the changes in nuclear to be under 2.5 of all time but peaked over 2.5 in 1990. We have the word terrorist increasing in the early years but decreased after 2010. Also, "freedom" has been increasing and become all time high of compared to other words beginning of 2000s.
+
+
+
+# Defining ‘Topic’ in Text Analysis
+# Latent Dirichlet Allocation (LDA)
+# Using Topic Modeling for Unsupervised Learning
+# Tuning Topic Distributions
+
+
+
+
+
+
+```{r p3}
+g8 <- unique(speech$country)
+g8 <- c("CAN","FRA","GBR", "ITA","JPN","USA", "RUS", "DEU")
+```
+```{r p4}
+text <- pre_process_corpus(speech, "text", replace_numbers = T, 
+                           extra_stopwords = g8,
+                           root_gen = "lemmatize")
+speech$review_preprocessed <- text
+```
+
+```{r p5}
+it <- itoken(text, tokenizer = word_tokenizer)
+vocab_full <- create_vocabulary(it, ngram = c(1, 3))
+
+# set lower bound
+lbound <- 2
+
+vocab <- vocab_full[vocab_full$doc_count > lbound,]
+
+vectorizer <- vocab_vectorizer(vocab)
+dtm <- create_dtm(it, vectorizer)
+dim(dtm)
+```
+
+```{r p6}
+library(Matrix)
+sparse_corpus <- Matrix(dtm, sparse = T)
+
+```
+
+
+```{r p7, message=FALSE, cache=FALSE, echo=FALSE, include=FALSE}
+library(stm)
+topic_model <- stm(sparse_corpus, init.type = 'LDA', seed = 12345, K = 12)
+```
+
+```{r p8}
+topic_content <- as.data.frame(t(exp(topic_model$beta$logbeta[[1]])))
+colSums(topic_content)
+```
+
+```{r p9}
+apply(topic_content, 2, function(x) {topic_model$vocab[order(x, decreasing = T)[1:10]]})
+
+```
+
+
+
+```{r p10, message=FALSE, cache=FALSE, echo=FALSE, include=FALSE}
+lbound <- 2
+ubound <- 45
+
+vocab <- vocab_full[vocab_full$doc_count > lbound & vocab_full$doc_count < ubound,]
+
+vectorizer <- vocab_vectorizer(vocab)
+dtm <- create_dtm(it, vectorizer)
+dim(dtm)
+
+sparse_corpus <- Matrix(dtm, sparse = T)
+
+topic_model <- stm(sparse_corpus, init.type = 'LDA', seed = 12345, K = 12)
+```
+
+```{r p11}
+topic_content <- as.data.frame(t(exp(topic_model$beta$logbeta[[1]])))
+
+apply(topic_content, 2, function(x) {topic_model$vocab[order(x, decreasing = T)[1:10]]})
+```
+
+```{r p12}
+topic_prevalence <- as.data.frame(topic_model$theta)
+
+```
+
+
+```{r p13}
+top1 <- findThoughts(topic_model, topics = 8, texts = speech$text, n = 1)
+substr(top1$docs[[1]], 1, 1000)
+```
+
+
+```{r}
+# name topics for 6 most likely terms from each
+topic_names <- apply(topic_content, 2, function(x) {paste(topic_model$vocab[order(x,
+                                      decreasing = T)[1:6]], collapse = " ")})
+topic_names
+```
+
+# Analyze how the G8 countries align on topics and how that alignment has changed over time.
+```{r}
+df <- topic_prevalence
+colnames(df) <- topic_names
+df$year <- as.character(speech$year)
+df <- melt(df, id.vars = 'year', value.name = 'proportion', variable.name = 'topic')
+
+ggplot(df, aes(x = topic, y = proportion, fill = topic)) + geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_blank(), axis.text.y = element_blank(), legend.position = "none") +  
+  coord_flip() + facet_wrap(~ year, ncol = 9)
+```
+
+```{r, message=FALSE, cache=FALSE, echo=FALSE, include=FALSE}
+apply(topic_prevalence, 1, function(x) {round(max(x), digits = 3)})
+```
+
+```{r}
+mean(apply(topic_prevalence, 1, max))
+```
+
+```{r message=FALSE, cache=FALSE, echo=FALSE, include=FALSE}
+topic_model2 <- stm(sparse_corpus, init.type = 'LDA', seed = 12345,
+                   K = 8, control = list(alpha = 64))
+```
+
+```{r}
+topic_prevalence <- as.data.frame(topic_model2$theta)
+mean(apply(topic_prevalence, 1, max))
+```
+
+```{r}
+topic_content <- as.data.frame(t(exp(topic_model2$beta$logbeta[[1]])))
+topic_names <- apply(topic_content, 2, function(x) {paste(topic_model2$vocab[order(x,
+                                      decreasing = T)[1:6]], collapse = " ")})
+topic_names
+```
+
+```{r}
+df <- topic_prevalence
+colnames(df) <- topic_names
+df$year <- as.character(speech$year)
+df <- melt(df, id.vars = 'year', value.name = 'proportion', variable.name = 'topic')
+
+ggplot(df, aes(x = topic, y = proportion, fill = topic)) + geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_blank(), axis.text.y = element_blank(), legend.position = "none") +  
+  coord_flip() + facet_wrap(~ year, ncol = 9)
+```
+
+```{r}
+df <- topic_prevalence
+colnames(df) <- topic_names
+df$year <- as.character(speech$year)
+df <- melt(df, id.vars = 'year', value.name = 'proportion', variable.name = 'topic')
+
+library(pals)
+ggplot(df, aes(x = year, y = proportion, fill = topic)) + geom_bar(stat = 'identity') +
+  scale_fill_manual(values = paste0(alphabet(20), "FF"), name = "topic") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position="bottom") +
+  guides(fill = guide_legend(title.position = 'right', ncol = 2))
+```
+## This is a comprehensive visual of each topic has taken affect over time. we see the purple of first topic is in early 70s and slowly decreasing to get to grean which is topics about prenventions and diplomacy
+```{r, message=FALSE, cache=FALSE, echo=FALSE, include=FALSE}
+# convert matrix into document-level list of vocab counts
+docs <- apply(dtm, 1, function(x){
+  tmp <- as.data.frame(x)
+  tmp$vocab <- 1:nrow(tmp)
+  tmp <- tmp[tmp[,1] >0,]
+  tmp <- as.matrix.data.frame(t(tmp[, c(2,1)]))
+  return(tmp)
+})
+
+# run ksearch function and analyze results
+ksearch <- searchK(documents = docs, vocab = colnames(dtm), K = c(3:21))
+
+
+```
+
+```{r}
+ksearch
+```
+
+```{r, echo=FALSE,results='hide',fig.keep='all'}
+plot(ksearch)
+```
+
+## from search k we can create range of numbers that we desire for k and the function will estimate different outcomes of K. we can notice that semantice cogerence are performing better at 15 number of topics but we see a slightly increase in residuals since we might increase the number of k.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,614 @@
+---
+title: "IMDB Sentiment Analysis and Bag of Words Classification "
+author: "Mohammed Alrashidan"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+
+- Applying Regression Models to Text
+
+- Regularized Binomial Regression Model
+
+- Optimizing Model Performance
+
+
+```{r setup}
+knitr::opts_chunk$set(echo = T, include=T)
+```
+
+
+
+```{r, message=FALSE}
+source("/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/Functions/load_NLP_env.R")
+path <- "/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/Functions/"
+load_NLP_env(path)
+```
+
+
+
+```{r}
+file_path <- "/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/datasets/movie_reviews_train.csv"
+data <- read.csv(file_path)
+```
+
+```{r}
+library(textdata)
+```
+# AFINN
+```{r}
+afinn <- get_sentiments("afinn")
+afinn_stopwords <- stopwords()[which(stopwords() %in% afinn$word)]
+
+text <- pre_process_corpus(data, "text", replace_emoji = T,
+                           replace_numbers = T,
+                           non_stopwords = afinn_stopwords)
+
+data$text_processed <- text
+it <- itoken(text, tokenizer = word_tokenizer)
+vocab <- create_vocabulary(it)
+
+vectorizer <- vocab_vectorizer(vocab)
+dtm <- create_dtm(it, vectorizer)
+
+dtm <- dtm[, which(colnames(dtm) %in% afinn$word)]
+
+afinn_reduced <- afinn[afinn$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(afinn_reduced$value)
+
+df <- data.frame(assigned_sentiment = data$label, 
+                 afinn = sentiment_value[,1])
+
+```
+
+```{r}
+calc_fbeta <- function(df, truth_col, truth_val, pred_col, pred_val, beta){
+  recall <- nrow(df[df[, truth_col] == truth_val & df[, pred_col] == pred_val,])/
+  nrow(df[df[, truth_col] == truth_val,])
+  precision <- nrow(df[df[, truth_col] == truth_val & df[, pred_col] == pred_val,])/
+  nrow(df[df[, pred_col] == pred_val,])
+  (1 + beta^2)*(precision * recall)/((beta^2 * precision) + recall)
+}
+```
+
+
+## AFINN Prediction Result
+```{r}
+# create a column of binary predictions with a score threshold of 0
+df$afinn_pred <- ifelse(df$afinn > 0, 1, 0)
+
+gt_sent <- ifelse(df$assigned_sentiment == 1, 1, 0)
+
+# create ground truth sentiment binary numeric vector and analogous vector for AFINN predictions
+auc_afinn <- glmnet:::auc(gt_sent, df$afinn_pred)
+
+f2_afinn <- calc_fbeta(df,'assigned_sentiment', 1, 'afinn_pred', 1, 0.5)
+f2_afinn
+```
+
+
+## NRC Approach
+```{r}
+nrc <- get_sentiments("nrc")
+nrc <- nrc[nrc$sentiment %in% c('positive', 'negative'),]
+
+nrc <- nrc[!nrc$word %in% nrc$word[duplicated(nrc$word)],] 
+nrc$value <- ifelse(nrc$sentiment == "positive", 1,0)
+
+# no overlap between nrc and stopwords, so don't need to reprocess text
+nrc_stopwords <- stopwords()[which(stopwords() %in% nrc$word)]
+
+dtm <- create_dtm(it, vectorizer)
+dtm <- dtm[, which(colnames(dtm) %in% nrc$word)]
+
+nrc_reduced <- nrc[nrc$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(nrc_reduced$value)
+df$nrc <- sentiment_value[,1]
+
+
+df$nrc_pred <- ifelse(df$nrc > 0, 1, 0)
+
+table(df$assigned_sentiment, df$nrc_pred)
+
+auc_nrc <- glmnet:::auc(gt_sent, df$nrc_pred)
+
+
+f2_nrc <- calc_fbeta(df, 'assigned_sentiment', 1, 'nrc_pred', 1, 0.5)
+
+cat("AUC: ", auc_nrc)
+cat("\nf2_nrc:", f2_nrc)
+
+```
+## Bing Approach
+```{r}
+bing <- get_sentiments("bing")
+bing <- bing[!bing$word %in% bing$word[duplicated(bing$word)],]
+bing$value <- ifelse(bing$sentiment == "positive", 1, 0)
+dtm <- dtm[, which(colnames(dtm) %in% bing$word)]
+bing_reduced <- bing[bing$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+sentiment_value <- dtm %*% as.matrix(bing_reduced$value)
+df$bing <- sentiment_value[,1]
+
+df$bing_pred <- ifelse(df$bing > 0, 1, 0)
+
+auc_bing <- glmnet:::auc(gt_sent, df$bing_pred)
+f2_bing <- calc_fbeta(df, 'assigned_sentiment', 1, 'bing_pred', 1, 0.5)
+
+cat("auc_bing: ", auc_bing)
+cat("\nf2_bing:", f2_bing)
+
+```
+
+
+```{r}
+df_long <- melt(df[, c('assigned_sentiment', 'afinn', 'nrc', 'bing')], 
+                id = 'assigned_sentiment', 
+                value.name = 'calculated_sentiment',
+                variable.name = 'lexicon')
+
+ggplot(df_long, aes(x = assigned_sentiment, y = calculated_sentiment, color = lexicon)) +
+  geom_boxplot() +
+  scale_size_area(max_size = 50) + 
+  theme(legend.position = 'top')
+```
+
+# Managing Negation
+```{r}
+# list of negation terms
+neg_terms <- c('no', 'not', 'none', 'nobody', 'nothing', 'neither', 'nowhere', 'never',
+               'hardly', 'scarcely', 'barely')
+
+# AFINN NEG
+afinn_neg <- rbind(afinn, data.frame(word = neg_terms[!neg_terms %in% afinn$word], value = -1))
+afinn_neg <- afinn_neg[order(afinn_neg$word),]
+
+dtm <- create_dtm(it, vectorizer)
+dtm <- dtm[, which(colnames(dtm) %in% afinn_neg$word)]
+
+afinn_neg_reduced <- afinn_neg[afinn_neg$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(afinn_neg_reduced$value)
+
+df$afinn_neg <- sentiment_value[, 1]
+df$afinn_neg_pred <- ifelse(df$afinn_neg > 0, 1, 0)
+
+auc_afinn_neg <- glmnet:::auc(gt_sent, df$afinn_neg_pred)
+f2_afinn_neg <- calc_fbeta(df, 'assigned_sentiment', 1, 'afinn_neg_pred', 1, 0.5)
+
+cat("auc_afinn_neg: ", auc_afinn_neg)
+cat("\nf2_afinn_neg: ", f2_afinn_neg)
+
+```
+## NRC negation
+```{r}
+nrc_neg <- rbind(nrc, data.frame(word = neg_terms[!neg_terms %in% nrc$word],
+                                     sentiment = NA, value = -1))
+nrc_neg <- nrc_neg[order(nrc_neg$word),]
+
+dtm <- create_dtm(it, vectorizer)
+dtm <- dtm[, which(colnames(dtm) %in% nrc_neg$word)]
+
+nrc_neg_reduced <- nrc_neg[nrc_neg$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(nrc_neg_reduced$value)
+
+df$nrc_neg <- sentiment_value[, 1]
+df$nrc_neg_pred <- ifelse(df$nrc_neg > 0, 1, 0)
+
+auc_nrc_neg <- glmnet:::auc(gt_sent, df$nrc_neg_pred)
+f2_nrc_neg <- calc_fbeta(df, 'assigned_sentiment', 1, 'nrc_neg_pred', 1, 0.5)
+
+cat("auc_nrc_neg: ", auc_nrc_neg)
+cat("\nf2_nrc_neg: ", f2_nrc_neg)
+
+```
+## Bing Negation
+```{r}
+bing_neg <- rbind(bing, data.frame(word = neg_terms[!neg_terms %in% bing$word],
+                                     sentiment = NA, value = -1))
+bing_neg <- bing_neg[order(bing_neg$word),]
+
+dtm <- dtm[, which(colnames(dtm) %in% bing_neg$word)]
+
+bing_neg_reduced <- bing_neg[bing_neg$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(bing_neg_reduced$value)
+df$bing_neg <- sentiment_value[, 1]
+
+df$bing_neg_pred <- ifelse(df$bing_neg > 0, 1, 0)
+
+auc_bing_neg <- glmnet:::auc(gt_sent, df$bing_neg_pred)
+f2_bing_neg <- calc_fbeta(df, 'assigned_sentiment', 1, 'bing_neg_pred', 1, 0.5)
+
+cat("auc_bing_neg: ", auc_bing_neg)
+cat("\nf2_bing_neg: ", f2_bing_neg)
+
+```
+
+
+# BIGRAM
+## AFINN Bi-gram
+```{r}
+vocab_bi <- create_vocabulary(it, ngram = c(1,2))
+vectorizer_bi <- vocab_vectorizer(vocab_bi)
+
+# index of terms that start with a negation term and end with an AFINN term 
+  # Note: need to exempt 'no' from AFINN lexicon because it is also a negation term
+afinn_bi <- sapply(vocab_bi$term, function(x) {
+  strsplit(x, "_")[[1]][1] %in% neg_terms &&
+    strsplit(x, "_")[[1]][2] %in% afinn$word[afinn$word != "no"]})
+
+vocab_bi$term[afinn_bi][1:10]
+
+pol_bi <- vocab_bi$term[afinn_bi]
+pol_bi_value <- unlist(sapply(pol_bi, function(x){
+  terms <- strsplit(x, "_")[[1]]
+  terms <- terms[terms != "no"]
+  afinn[which(afinn$word %in% terms), "value"] * -1
+}))
+
+afinn_bi <- rbind(afinn, data.frame(word = pol_bi, value = pol_bi_value))
+dtm <- create_dtm(it, vectorizer_bi)
+dtm <- dtm[, which(colnames(dtm) %in% afinn_bi$word)]
+afinn_bi_reduced <- afinn_bi[afinn_bi$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(afinn_bi_reduced$value)
+
+df$afinn_bi <- sentiment_value[, 1]
+df$afinn_bi_pred <- ifelse(df$afinn_bi > 0, 1, 0)
+auc_afinn_bi <- glmnet:::auc(gt_sent, df$afinn_bi_pred)
+f2_afinn_bi <- calc_fbeta(df, 'assigned_sentiment', 1, 'afinn_bi_pred', 1, 0.5)
+
+cat("auc_afinn_bi", auc_afinn_bi)
+cat("\nf2_afinn_bi", f2_afinn_bi)
+```
+
+## NRC Bi-gram
+```{r}
+nrc_bi <- sapply(vocab_bi$term, function(x) {
+  strsplit(x, "_")[[1]][1] %in% neg_terms &&
+    strsplit(x, "_")[[1]][2] %in% nrc$word})
+
+pol_bi <- vocab_bi$term[nrc_bi]
+pol_bi_value <- unlist(sapply(pol_bi, function(x){
+  terms <- strsplit(x, "_")[[1]]
+  terms <- terms[terms != "no"]
+  nrc[which(nrc$word %in% terms), "value"] * -1
+}))
+nrc_bi <- rbind(nrc, data.frame(word = head(pol_bi,2115), sentiment = NA, value = head(pol_bi_value,2115)))
+
+dtm <- create_dtm(it, vectorizer_bi)
+dtm <- dtm[, which(colnames(dtm) %in% nrc_bi$word)]
+
+nrc_bi_reduced <- nrc_bi[nrc_bi$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(nrc_bi_reduced$value)
+
+df$nrc_bi <- sentiment_value[, 1]
+df$nrc_bi_pred <- ifelse(df$nrc_bi > 0, 1, 0)
+
+auc_nrc_bi <- glmnet:::auc(gt_sent, df$nrc_bi_pred)
+f2_nrc_bi <- calc_fbeta(df, 'assigned_sentiment', 1, 'nrc_bi_pred', 1, 0.5)
+
+cat("auc_nrc_bi", auc_nrc_bi)
+cat("\nf2_nrc_bi", f2_nrc_bi)
+
+```
+
+
+# Bing bi-gram
+```{r}
+bing_bi <- sapply(vocab_bi$term, function(x) {
+  any(strsplit(x, "_")[[1]][1] %in% neg_terms) &&
+    any(strsplit(x, "_")[[1]][2] %in% bing$word[bing$word != "scarcely"])})
+
+pol_bi <- vocab_bi$term[bing_bi]
+pol_bi_value <- unlist(sapply(pol_bi, function(x){
+  terms <- strsplit(x, "_")[[1]]
+  terms <- terms[terms != "scarcely"]
+  bing[which(bing$word %in% terms), "value"] * -1
+}))
+bing_bi <- rbind(bing, data.frame(word = pol_bi, sentiment = NA, value = pol_bi_value))
+
+dtm <- create_dtm(it, vectorizer_bi)
+dtm <- dtm[, which(colnames(dtm) %in% bing_bi$word)]
+
+bing_bi_reduced <- bing_bi[bing_bi$word %in% colnames(dtm),]
+dtm <- dtm[, order(colnames(dtm))]
+
+sentiment_value <- dtm %*% as.matrix(bing_bi_reduced$value)
+
+df$bing_bi <- sentiment_value[, 1]
+
+```
+
+
+# Sentimentr Package
+
+## AFINN Sentimentr
+```{r}
+library(sentimentr)
+
+afinn_sentr <- afinn[!afinn$word %in% lexicon::hash_valence_shifters$x, ]
+colnames(afinn_sentr) <- c('x', 'y')
+afinn_sentr <- as_key(afinn_sentr)
+
+
+# Note: takes a long time to run, hard copy saved
+sent_val_sentr_afinn <- sapply(data$text, function(x) {
+  get_sentences(x) %>%
+    sentiment(polarity_dt = afinn_sentr) %>%
+    subset(select = sentiment) %>% 
+    as.matrix %>% 
+    mean
+  })
+
+df$afinn_sentr <- sent_val_sentr_afinn
+df$afinn_sentr_pred <- ifelse(df$afinn_sentr > 0, 1, 0)
+
+f2_afinn_sentr <- calc_fbeta(df, 'assigned_sentiment', 1, 'afinn_sentr_pred', 1, 0.5)
+cat("f2_afinn_sentr", f2_afinn_sentr)
+```
+
+
+## NRC Sentimentr
+```{r}
+sent_val_sentr_nrc <- sapply(data$text, function(x) {
+  get_sentences(x) %>%
+    sentiment(polarity_dt = lexicon::hash_sentiment_nrc) %>%
+    subset(select = sentiment) %>% 
+    as.matrix %>% 
+    mean
+  })
+
+df$nrc_sentr <- sent_val_sentr_nrc
+df$nrc_sentr_pred <- ifelse(df$nrc_sentr > 0, 1, 0)
+
+f2_nrc_sentr <- calc_fbeta(df, 'assigned_sentiment', 1, 'nrc_sentr_pred', 1, 0.5)
+cat("f2_nrc_sentr",f2_nrc_sentr)
+```
+
+## Bing Sentimentr
+```{r}
+bing_sentr <- bing[!bing$word %in% lexicon::hash_valence_shifters$x, 
+                   c('word', 'value')]
+colnames(bing_sentr) <- c('x', 'y')
+bing_sentr <- as_key(bing_sentr)
+
+sent_val_sentr_bing <- sapply(data$text, function(x) {
+  get_sentences(x) %>% 
+    sentiment(polarity_dt = bing_sentr) %>%
+    subset(select = sentiment) %>% 
+    as.matrix %>% 
+    mean
+})
+
+df$bing_sentr <- sent_val_sentr_bing
+
+df$bing_sentr_pred <- ifelse(df$bing_sentr > 0, 1, 0)
+
+
+f2_bing_sentr <- calc_fbeta(df, 'assigned_sentiment', 1, 'bing_sentr_pred', 1, 0.5)
+cat("f2_bing_sentr",f2_bing_sentr)
+```
+
+
+
+# visualtion of all approaches
+```{r}
+confusion_table <- ldply(apply(df[, -1], 2, function(x) {
+  data.frame(true_positive = sum(x > 0 & df$assigned_sentiment == 1),
+  false_positive = sum(x > 0 & df$assigned_sentiment == 0) * -1,
+  true_negative = sum(x <= 0 & df$assigned_sentiment == 0),
+  false_negative = sum(x <= 0 & df$assigned_sentiment == 1) * -1)
+}), rbind)
+
+colnames(confusion_table)[1] <- 'model'
+confusion_table <- melt(confusion_table, id = 'model', value.name = 'count')
+
+library(pals)
+ggplot(confusion_table, aes(x = variable, y = count)) +
+  geom_col(aes(fill = model), position = 'dodge') + coord_flip() +
+  scale_fill_manual(values = paste0(alphabet(23), "FF"), name = "model") +
+  theme(axis.title.y=element_blank())
+```
+
+
+
+
+- Explain your choices and results - which approach worked best to predict positive sentiment? Negative sentiment?
+We see that from the approchaes we chose, we find that we are predicting true_positive more than false positive in most of the models. also, we have here afinn_bi_pred and afinn_bi is predicting a high true_negative but very low true_positive, so we will be using sentimentr approach since it is our best option of predicting true_positive and true_negative compared to other model we tried before. our fbeta is highest in afinn_sentr_pred of 0.74 and nrc_sentr_pred is 0.7 comming next, this to conclude sentmentr approch is better in this case in terms of getting predicting t-postives 
+
+
+
+
+
+```{r}
+file_path_test <- "/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/datasets/movie_reviews_test.csv"
+data_test <- read.csv(file_path_test)
+```
+
+
+
+```{r}
+# Note: takes a long time to run, hard copy saved
+# test sentmr AFINN
+afinn_test <- sapply(data_test$text, function(x) {
+  get_sentences(x) %>%
+    sentiment(polarity_dt = afinn_sentr) %>%
+    subset(select = sentiment) %>% 
+    as.matrix %>% 
+    mean
+  })
+data_test$afinn_test_sentr <- afinn_test
+
+#AFINN
+data_test$afinn_best_pred <- ifelse(data_test$afinn_test_sentr > 0, 1, 0)
+calc_fbeta(data_test, 'label', 1, 'afinn_best_pred', 1, 0.5)
+```
+
+
+
+```{r}
+# Bing
+# test sentmr AFINN
+bing_test <- sapply(data_test$text, function(x) {
+  get_sentences(x) %>%
+    sentiment(polarity_dt = bing_sentr) %>%
+    subset(select = sentiment) %>% 
+    as.matrix %>% 
+    mean
+  })
+data_test$bing_test_sentr <- bing_test
+
+#BING
+data_test$bing_best_pred <- ifelse(bing_test > 0, 1, 0)
+calc_fbeta(data_test, 'label', 1, 'bing_best_pred', 1, 0.5)
+```
+
+We see that from the approchaes we chose, we find that we are predicting true_positive more than false positive in most of the models. also, we have here afinn_bi_pred and afinn_bi is predicting a high true_negative but very low true_positive, so we will be using afinn sentimentr approach since it is our best option of predicting true_positive and true_negative of .70 compared to other model we tried before. our fbeta is highest in afinn_sentr_pred of 0.70 and nrc_sentr_pred is 0.68 comming next, this to conclude sentmentr approch is better in this case in terms of getting predicting t-postives, we will be using our test data on afinn_sentr since it is the best option we got. using fbeta 0.5 we are able to predict test data of 0.697 and that seems good predictoin since we we want more t-positive more. We noticed that bing predict higher f-negative which does not seem very effiecinet  
+
+
+```{r}
+reviews <- data
+```
+
+```{r}
+rand <- runif(nrow(reviews))
+sets <- ifelse(rand < 0.9, 'train', 'test')
+reviews$set <- sets
+
+train <- reviews[reviews$set == 'train',]
+```
+
+
+```{r}
+library(Rcpp)
+library(text2vec)
+# tokenize training data with itoken function, it = 'iterable'
+it_train <- itoken(train$text_processed, tokenizer = word_tokenizer, ids = train$id)
+vocab <- create_vocabulary(it_train, ngram = c(1, 3))
+
+# set lower bound
+lbound <- round(0.009 * nrow(train))
+
+vocab <- vocab[vocab$doc_count > lbound,]
+head(vocab)
+```
+
+```{r}
+vectorizer <- vocab_vectorizer(vocab)
+dtm_train <- create_dtm(it_train, vectorizer)
+dim(dtm_train)
+```
+
+```{r}
+test <- reviews[reviews$set == 'test',]
+it_test <- itoken(test$text_processed,
+                   tokenizer = word_tokenizer, ids = test$id)
+
+dtm_test <- create_dtm(it_test, vectorizer)
+dim(dtm_test)
+```
+
+```{r}
+library(glmnet)
+
+model_dtm <- cv.glmnet(x = dtm_train, y = train$label, type.measure = 'auc',
+                              family = 'binomial', alpha = 1)
+```
+
+```{r}
+coefs <- coef(model_dtm, s = "lambda.min")
+coefs <- data.frame(name = coefs@Dimnames[[1]][coefs@i + 1], coefficient = coefs@x)
+
+nrow(coefs)/ncol(dtm_train)
+```
+
+```{r}
+library(ggplot2)
+ggplot(coefs, aes(coefficient)) + geom_histogram(fill = 'lightgreen') + theme_classic()
+
+```
+
+```{r}
+coefs[order(coefs$coefficient, decreasing = T),][1:10,]
+```
+
+```{r}
+coefs[order(coefs$coefficient),][1:10,]
+```
+
+```{r}
+plot(model_dtm)
+```
+
+```{r}
+pred_test <- predict(model_dtm, dtm_test, type = 'response')[,1]
+
+thresh <- 0.5
+table(test$label, pred_test > thresh)
+```
+
+```{r}
+glmnet:::auc(test$label, pred_test > thresh)
+
+```
+
+
+```{r}
+# compute IDF
+number_of_docs <- nrow(dtm_train)
+term_in_docs <- colSums(dtm_train > 0)
+idf <- log(number_of_docs / term_in_docs)
+
+# compute TF/IDF
+tfidf_train <- t(t(dtm_train) * idf)
+tfidf_test <- t(t(dtm_test) * idf)
+```
+
+```{r}
+model_tfidf <- cv.glmnet(x = tfidf_train, y = train$label, type.measure = 'auc',
+                              family = 'binomial', alpha = 1)
+```
+
+```{r}
+plot(model_tfidf)
+
+```
+
+```{r}
+pred_test <- predict(model_tfidf, tfidf_test, type = 'response')[,1]
+
+thresh <- 0.5
+table(test$label, pred_test > thresh)
+```
+
+```{r}
+glmnet:::auc(test$label, pred_test > thresh)
+
+```
+
+little improvement
+
+
+
+
+
+
+
+
+
