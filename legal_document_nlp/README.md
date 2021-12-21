@@ -15,5 +15,5 @@ You will find most common practices when dealing with unsupervised learning and 
 Files are webscraped from LawInsider.com, and I am only using the data for academic and research practices in the field of data science
 
 # How to Interact with your project
-by running the Function files the eviroment should be ready and set for running the notebook with no issue by making sure you install all libraries you encounter.
+by running the Function files the enviroment should be ready and set for running the notebook with no issue by making sure you install all libraries you encounter.
 
