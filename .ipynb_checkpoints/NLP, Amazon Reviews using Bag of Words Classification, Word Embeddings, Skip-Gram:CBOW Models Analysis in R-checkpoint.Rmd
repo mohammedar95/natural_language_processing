@@ -1,0 +1,352 @@
+---
+title: "Bag of Words Classification, Word Embeddings, Skip-Gram/CBOW Models Analysis"
+author: "Mohammed Alrashidan"
+output: html_document
+---
+
+```{r, message=FALSE}
+source("/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/Functions/load_NLP_env.R")
+path <- "/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/Functions/"
+load_NLP_env(path)
+```
+
+```{r}
+library(Rcpp)
+library(text2vec)
+```
+
+```{r}
+file_path <- "/Users/mo/Desktop/Desktop/School/USF/Courses/Fall 2021/NLP/datasets/amazon_reviews.csv"
+amazon <- read.csv(file_path)
+amazon <- head(amazon,200000)
+```
+
+# Convert this to a binary classifier where overall scores of 4 and 5 are 'positive,' and other values are 'negative.'
+
+```{r}
+library(dplyr)
+amazon$pos_neg <- ifelse(amazon$overall == 4 | amazon$overall == 5, 1, 0)
+
+review_stat <- amazon %>% group_by(pos_neg) %>% tally()
+review_stat$percent <- review_stat$n / sum(review_stat$n)*100
+
+```
+We can see that we have 81% 1s which is positive reviews compared to 18% of negative reviews
+
+
+```{r}
+# cleaning the amazon reviews
+text <- pre_process_corpus(amazon, "reviewText", replace_numbers = T, root_gen = "lemmatize")
+amazon$review_preprocessed <- text
+amazon$review_preprocessed[1]
+```
+
+# Construct a DTM that includes unigrams, bigrams, and trigrams.
+```{r}
+# preparing the data for analysis.
+# spliting the data to train and test
+rand <- runif(nrow(amazon))
+sets <- ifelse(rand < 0.9, "train", "test")
+amazon$set <- sets
+
+train <- amazon[amazon$set == "train",]
+```
+
+```{r}
+
+# constructing unigrams, bigrams, and trigrams.
+it_train <- itoken(train$review_preprocessed, tokenizer = word_tokenizer, ids = train$id)
+vocab <- create_vocabulary(it_train, ngram = c(1,3))
+
+lbound <- round(0.009 * nrow(train))
+
+vocab <- vocab[vocab$doc_count > lbound,]
+head(vocab)
+```
+
+```{r}
+vectorizer <- vocab_vectorizer(vocab)
+
+dtm_train <- create_dtm(it_train, vectorizer)
+dim(dtm_train)
+```
+
+
+```{r}
+test <- amazon[amazon$set == "test",]
+it_test <- itoken(test$review_preprocessed,
+                  tokenizer = word_tokenizer, ids = test$id)
+
+dtm_test <- create_dtm(it_test, vectorizer)
+dim(dtm_test)
+```
+
+
+# Regualrizartion Method using Lasso
+
+```{r}
+library(glmnet)
+
+model_dtm <- cv.glmnet(x = dtm_train, y = train$pos_neg, type.measure = "auc",
+                       family = "binomial", alpha = 1)
+
+```
+
+```{r}
+coefs <- coef(model_dtm, s = 'lambda.min')
+coefs <- data.frame(name = coefs@Dimnames[[1]][coefs@i + 1], coefficient = coefs@x)
+
+print((nrow(coefs)/ncol(dtm_train)))
+```
+
+
+```{r}
+ggplot(coefs, aes(coefficient)) + geom_histogram(fill = 'lightblue') + theme_classic()
+
+```
+
+```{r}
+pred_test <- predict(model_dtm, dtm_test, type= 'response')[,1]
+
+thresh <- 0.5
+table(test$pos_neg, pred_test > thresh)
+```
+3- Using the same techniques we covered in lecture, estimate a binomial logistic regression model. Extract or calculate your model's AUC value. 
+
+```{r}
+glmnet:::auc(test$pos_neg, pred_test > thresh)
+```
+
+
+```{r}
+#model 2
+
+model_dtm <- cv.glmnet(x = dtm_train, 
+                       y = train$pos_neg, 
+                       type.measure = "auc",
+                       family = "binomial", 
+                       alpha = 1,
+                       nfolds = 3)
+
+coefs <- coef(model_dtm, s = 'lambda.min')
+coefs <- data.frame(name = coefs@Dimnames[[1]][coefs@i + 1], coefficient = coefs@x)
+
+print((nrow(coefs)/ncol(dtm_train)))
+
+
+pred_test <- predict(model_dtm, dtm_test, type= 'response')[,1]
+
+thresh <- 0.5
+table(test$pos_neg, pred_test > thresh)
+
+glmnet:::auc(test$pos_neg, pred_test > thresh)
+
+```
+in this model we notice that decreasing the folds will decrease the AUC which means number of iteration should be higher
+
+
+```{r}
+#model 3
+
+model_dtm <- cv.glmnet(x = dtm_train, 
+                       y = train$pos_neg, 
+                       type.measure = "auc",
+                       family = "binomial", 
+                       alpha = 1,
+                       thresh = 1e-07,
+                       nfolds = 3)
+
+coefs <- coef(model_dtm, s = 'lambda.min')
+coefs <- data.frame(name = coefs@Dimnames[[1]][coefs@i + 1], coefficient = coefs@x)
+
+print((nrow(coefs)/ncol(dtm_train)))
+
+
+pred_test <- predict(model_dtm, dtm_test, type= 'response')[,1]
+
+thresh <- 0.5
+table(test$pos_neg, pred_test > thresh)
+
+glmnet:::auc(test$pos_neg, pred_test > thresh)
+
+```
+in this one, when we added a nfolds =3 and thresh = 1e-07, we saw some imporvement of 0.002 but tells us we have to increase our model iteration to better results and we should use cross validation for better AUC. our model training model predicted the test dataset of each vocab being either a negative or positive and the best AUC we come up to is approx 70% accurate that means our model is fairly doing good
+
+
+
+
+
+
+
+```{r}
+data <- amazon
+```
+
+
+
+```{r}
+
+data$text_clean <- text
+
+skipgrams <- unnest_tokens(data, ngram, text_clean, token = "ngrams", n = 9)
+skipgrams$ngramID <- 1:nrow(skipgrams)
+skipgrams$skipgramID <- paste(skipgrams$X_unit_id, skipgrams$ngramID, sep = '_')
+
+
+head(skipgrams[, c('ngramID', 'ngram', 'skipgramID')])
+
+skipgrams <- unnest_tokens(skipgrams, word, ngram)
+
+skipgrams[skipgrams$ngramID == 1, c('skipgramID', 'word')]
+
+
+```
+
+
+```{r}
+
+library(widyr)
+skipgram_probs <- pairwise_count(skipgrams, word, skipgramID, diag = T, sort = T)
+skipgram_probs$p <- skipgram_probs$n/sum(skipgram_probs$n)
+
+unigram_probs <- unnest_tokens(data, word, text_clean)
+unigram_probs <- count(unigram_probs, word, sort = T)
+unigram_probs$p <- unigram_probs$n/sum(unigram_probs$n)
+
+
+lbound <- 20
+normed_probs <- skipgram_probs[skipgram_probs$n > lbound,]
+
+colnames(normed_probs) <- c('word1', 'word2', 'n', 'p_all')
+normed_probs <- merge(normed_probs, unigram_probs[, c('word', 'p')], by.x = 'word2', by.y = 'word', all.x = T)
+normed_probs <- merge(normed_probs, unigram_probs[, c('word', 'p')], by.x = 'word1', by.y = 'word', all.x = T)
+
+head(normed_probs)
+
+
+```
+
+
+```{r}
+
+# p_all = probability of seeing a given pair of words in the same window across ALL pairs
+# p.x and p.y = probability of seeing given word across all words
+normed_probs$p_combined <- normed_probs$p_all/normed_probs$p.x/normed_probs$p.y
+
+
+normed_probs <- normed_probs[order(normed_probs$p_combined, decreasing = T),]
+brands <- c("dryer", "washerdryer","washer","refrigerator", "dishwasher", "stove")
+appliances <- normed_probs[normed_probs$word1 %in% brands,]
+appliances <- appliances[order(appliances$word1, appliances$word2,-appliances$p_combined),]
+head(appliances)
+
+```
+
+```{r}
+normed_probs$pmi <- log(normed_probs$p_combined)
+
+pmi_matrix <- cast_sparse(normed_probs, word1, word2, pmi)
+
+library(irlba)
+pmi_svd <- irlba(pmi_matrix, 256, maxit = 1e3)
+word_vectors <- pmi_svd$u
+
+rownames(word_vectors) <- rownames(pmi_matrix)
+
+
+```
+
+# Matching Words
+```{r}
+
+library("tibble")
+matching_word <- function(word_vectors, selected_vector) {
+  similarities <- word_vectors %*% selected_vector %>%
+    as.data.frame() %>%
+    rename(similar_prob = V1) %>%
+    arrange(-similar_prob)
+  
+  
+  similarities %>%
+    mutate(word_similar = rownames(similarities)) %>%
+    select(word_similar, similar_prob)
+}
+
+
+
+
+
+dryer <- matching_word(word_vectors, word_vectors["dryer",])
+rownames(dryer) <- NULL
+
+
+washerdryer <- matching_word(word_vectors, word_vectors["washerdryer",])
+rownames(washerdryer) <- NULL
+
+
+washer <- matching_word(word_vectors, word_vectors["washer",])
+rownames(washer) <- NULL
+
+
+refrigerator <- matching_word(word_vectors, word_vectors["refrigerator",])
+rownames(refrigerator) <- NULL
+
+
+dishwasher <- matching_word(word_vectors, word_vectors["dishwasher",])
+rownames(dishwasher) <- NULL
+
+
+stove <- matching_word(word_vectors, word_vectors["stove",])
+rownames(stove) <- NULL
+
+
+
+```
+
+
+
+
+```{r}
+
+plot_similar <- function(df, title){
+  string_title <- deparse(substitute(df))
+  ggplot(df[2:11,], aes(word_similar, similar_prob)) + geom_bar(stat="identity") + coord_flip() + theme_classic() + scale_y_continuous(expand = c(0,0)) +
+    labs(x = NULL, title = paste("Top 10 words from Word Vector that is associated with ","(",(string_title),")"),
+         subtitle = "Based on the Amazon Reveiws, calculated using counts and matrix factorization")
+}
+
+
+
+plot_similar(washer)
+plot_similar(washerdryer)
+plot_similar(dryer)
+# We can see the word "Machine" is the most associated with washer then "dryer" and "washing". 
+
+plot_similar(refrigerator)
+#in this graph we see how refrigerator is associated with ice as intinutive thinking and samsung as brand, and we see model as could be the model of the brand. 
+
+
+plot_similar(stove)
+# We can see the "range" is very high probability showing with stove and oven coming second since they mean the same in natural language
+
+plot_similar(dishwasher)
+#The advantage of the word embedding is giving you a intuitive relationships between words. 
+#As going with all the appliances words, all top 10 similar word are making sense. I noticed that there are some off words that can be off the relationship. Also, usually the results would give you a synonym of the same word rather than the words that come with it. I would say that word embeding take a very high performance when factoring and processing large data which needs more instnaces and VM that can handle the computation
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
